@@ -12,3 +12,4 @@ tokio = { version = "1", features = ["full"] }
 serde = "1.0.152"
 tempfile = "3"
 zip = "0.6.3"
+regex = "1.7.0"

@@ -4,10 +4,12 @@ use reqwest::redirect;
 use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
+use std::io::Write;
 use std::io::copy;
 use std::io::Cursor;
 use std::path::Path;
 use tempfile::Builder;
+use regex::Regex;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -91,7 +93,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     let response = client.get(file_url).send().await?;
     let file_name = tmp_dir.path().join("sector.zip");
-    println!("{:?}", file_name);
     println!("Creating file: {}", file_name.display());
     let mut file = OpenOptions::new()
         .read(true)
@@ -141,6 +142,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut dest_file = File::create(&dest)?;
                 copy(&mut file, &mut dest_file)?;
             }
+        }
+    }
+    // Clear ASRs from sector definitions
+    println!("Clearing ASRs");
+    let asr_path = es_path.join(format!("{}\\ASR", fir));
+    let asr_regex = Regex::new(r"SECTORFILE:.*\nSECTORTITLE:.\n").unwrap();
+    for entry in fs::read_dir(asr_path)? {
+        let entry = entry?;
+        let fname = entry.file_name().to_str().unwrap().to_owned();
+        if fname.ends_with(".asr") {
+            // It's an ASR file. Delete the sector file binding.
+            let contents = fs::read_to_string(entry.path())?;
+            let new = asr_regex.replace_all(contents.as_str(), "SECTORFILE:\nSECTORTITLE:\n");
+            let mut file = OpenOptions::new().write(true).truncate(true).open(entry.path())?;
+            file.write(new.as_bytes())?;
         }
     }
 
