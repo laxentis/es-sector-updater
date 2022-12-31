@@ -1,0 +1,45 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'es-sector-updater'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=es-sector-updater",
+                    "--package=es-sector-updater"
+                ],
+                "filter": {
+                    "name": "es-sector-updater",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'es-sector-updater'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=es-sector-updater",
+                    "--package=es-sector-updater"
+                ],
+                "filter": {
+                    "name": "es-sector-updater",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

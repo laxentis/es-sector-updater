@@ -1,23 +1,17 @@
-use error_chain::error_chain;
 use reqwest::header;
 use reqwest::header::HeaderMap;
 use reqwest::redirect;
+use std::fs;
+use std::fs::OpenOptions;
 use std::io::copy;
 use std::io::Cursor;
 use std::fs::File;
 use tempfile::Builder;
 
-error_chain! {
-    foreign_links {
-        Io(std::io::Error);
-        HttpRequest(reqwest::Error);
-    }
-}
-
 const VERSION:&str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main]
-async fn main() -> Result<()>{
+async fn main() -> Result<(), Box<dyn std::error::Error>>{
     println!("ES Sector Update version {}", VERSION);
     println!("Getting sector link");
     let website = reqwest::get(
@@ -47,12 +41,34 @@ async fn main() -> Result<()>{
     
     let client = reqwest::Client::builder().redirect(redirect_policy).default_headers(hdr).build()?;
     let response = client.get(file_url).send().await?;
-    //println!("{:?}", response);
-    let file_name = tmp_dir.path().join("temp_sector.zip");
+    let file_name = tmp_dir.path().join("sector.zip");
+    println!("{:?}", file_name);
     println!("Creating file: {}", file_name.display());
-    let mut file = File::create(file_name)?;
+    let mut file = OpenOptions::new().read(true).write(true).create(true).open(file_name.to_owned())?;
     let mut content = Cursor::new(response.bytes().await?);
     copy(&mut content, &mut file)?;
+    // File is now downloaded and closed;
+    let mut archive = zip::ZipArchive::new(file)?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let outpath = match file.enclosed_name() {
+            Some(path) => tmp_dir.path().join(path.to_owned()),
+            None => continue,
+        };
+        if (*file.name()).ends_with('/') {
+            fs::create_dir_all(&outpath).unwrap();
+        } else {
+            if let Some(p) = outpath.parent() {
+                if !p.exists() {
+                    fs::create_dir_all(p).unwrap();
+                }
+                let mut outfile = File::create(&outpath).unwrap();
+                copy(&mut file, &mut outfile).unwrap();
+            }
+        }
+    }
+
 
     Ok(())
 }
