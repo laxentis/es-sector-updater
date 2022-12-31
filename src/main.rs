@@ -12,17 +12,25 @@ const VERSION:&str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>>{
+    // TODO: load the values from config file
+    let fir = "EPWW";
+    let package_name = "Sector_AIRAC_Update";
+    let es_path = "C:\\Users\\dawid\\Documents\\EuroScope";
+    // Get latest download link from GNG
+    let url = format!("http://files.aero-nav.com/{}", fir);
     println!("ES Sector Update version {}", VERSION);
     println!("Getting sector link");
     let website = reqwest::get(
-        "http://files.aero-nav.com/EPWW"
+        url
     ).await?.text().await?;
     let document = scraper::Html::parse_document(&website);
     let link_selector = scraper::Selector::parse("td>a").unwrap();
-    let links = document.select(&link_selector).map(|x| x.value().attr("href").unwrap()).filter(|x| is_correct_link(x, "Sector_AIRAC_Update", "zip"));
+    let links = document.select(&link_selector).map(|x| x.value().attr("href").unwrap()).filter(|x| is_correct_link(x, package_name, "zip"));
     let file_url = links.last().unwrap();
     println!("Got url: {}", file_url);
+    // Create a temporary directory to hold the files
     let tmp_dir = Builder::new().prefix("es-sector-updater-").tempdir()?;
+    // Configure the client to download the sector archive
     let redirect_policy = redirect::Policy::custom(|attempt| attempt.stop());
     let mut hdr = HeaderMap::new();
     hdr.insert(header::ACCEPT, header::HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"));
@@ -38,7 +46,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     hdr.insert("Sec-Fetch-User", header::HeaderValue::from_static("?1"));
     hdr.insert(header::UPGRADE_INSECURE_REQUESTS, header::HeaderValue::from_static("1"));
     hdr.insert(header::USER_AGENT, header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:108.0) Gecko/20100101 Firefox/108.0"));
-    
     let client = reqwest::Client::builder().redirect(redirect_policy).default_headers(hdr).build()?;
     let response = client.get(file_url).send().await?;
     let file_name = tmp_dir.path().join("sector.zip");
@@ -47,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     let mut file = OpenOptions::new().read(true).write(true).create(true).open(file_name.to_owned())?;
     let mut content = Cursor::new(response.bytes().await?);
     copy(&mut content, &mut file)?;
-    // File is now downloaded and closed;
+    // File is now downloaded and closed; Time to unzip it
     let mut archive = zip::ZipArchive::new(file)?;
 
     for i in 0..archive.len() {
@@ -68,6 +75,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
             }
         }
     }
+    // Archive is unzipped. No longer needed. Deleting it to make it easier to copy all files.
+    drop(archive);
+    fs::remove_file(file_name)?;
 
 
     Ok(())
