@@ -165,7 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set PRF sector files
     let sector_file_name = get_sector_file_name(&tmp_path).unwrap();
     let prf_regex = Regex::new(r"Settings\tsector.*\n").unwrap();
-    let sector_string = format!("Settings\tsector\t{}\n", sector_file_name);
+    let sector_string = format!("Settings\tsector\t\\{}\n", sector_file_name);
     for entry in fs::read_dir(es_path)? {
         let entry = entry?;
         let fname = entry.file_name().to_str().unwrap().to_owned();
