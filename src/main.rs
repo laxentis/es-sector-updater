@@ -8,17 +8,35 @@ use std::io::Write;
 use std::io::copy;
 use std::io::Cursor;
 use std::path::Path;
+use std::path::PathBuf;
 use tempfile::Builder;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[derive(Debug, Serialize, Deserialize)]
+struct Config {
+    fir: String,
+    package_name: String,
+    es_path: String,
+    prf_prefix: String,
+}
+
+fn read_config(file: &str) -> Config {
+    let cfg_file = fs::read_to_string(file).expect("Unable to read config file!");
+    let cfg: Config = serde_json::from_str(&cfg_file).expect("Unable to parse config file!");
+    return cfg;
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // TODO: load the values from config file
-    let fir = "EPWW";
-    let package_name = "Sector_AIRAC_Update";
-    let es_path = Path::new("C:\\Users\\dawid\\Documents\\EuroScope");
+    // load the values from config file
+    let cfg = read_config("config.json");
+    let fir = cfg.fir.as_str();
+    let package_name = cfg.package_name.as_str();
+    let es_path = Path::new(cfg.es_path.as_str());
+    let prf_prefix = cfg.prf_prefix.as_str();
     // Get latest download link from GNG
     let url = format!("http://files.aero-nav.com/{}", fir);
     println!("ES Sector Update version {}", VERSION);
@@ -103,7 +121,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     copy(&mut content, &mut file)?;
     // File is now downloaded and closed; Time to unzip it
     let mut archive = zip::ZipArchive::new(file)?;
-
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let outpath = match file.enclosed_name() {
@@ -126,8 +143,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(archive);
     fs::remove_file(file_name)?;
     println!{"Archive closed. Copying files to ES dir"};
+    let tmp_path = tmp_dir.into_path();
     // Copy all files to Euroscope directory
-    for entry in fs::read_dir(tmp_dir.into_path())? {
+    for entry in fs::read_dir(&tmp_path)? {
         let entry = entry?;
         let ftyp = entry.file_type()?;
         let dest = es_path.join(entry.file_name());
@@ -143,6 +161,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 copy(&mut file, &mut dest_file)?;
             }
         }
+    }
+    // Set PRF sector files
+    let sector_file_name = get_sector_file_name(&tmp_path).unwrap();
+    let prf_regex = Regex::new(r"Settings\tsector.*\n").unwrap();
+    let sector_string = format!("Settings\tsector\t{}\n", sector_file_name);
+    for entry in fs::read_dir(es_path)? {
+        let entry = entry?;
+        let fname = entry.file_name().to_str().unwrap().to_owned();
+        if fname.ends_with(".prf") && fname.starts_with(prf_prefix) {
+            let contents = fs::read_to_string(entry.path())?;
+            let new = prf_regex.replace_all(contents.as_str(), sector_string.to_owned());
+            let mut file = OpenOptions::new().write(true).truncate(true).open(entry.path())?;
+            file.write(new.as_bytes())?;
+        }
+
     }
     // Clear ASRs from sector definitions
     println!("Clearing ASRs");
@@ -161,6 +194,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+fn get_sector_file_name(path: &PathBuf) -> Option<String>  {
+    let mut rv: Option<String> = None;
+    fs::read_dir(path).unwrap().for_each(|entry| {
+        let entry = entry.unwrap();
+        let fname = entry.file_name().to_str().unwrap().to_owned();
+        if fname.ends_with(".sct") {
+            rv = Some(fname);
+        }
+    });
+    rv
 }
 
 fn is_correct_link(link: &str, package_name: &str, format: &str) -> bool {
