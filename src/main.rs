@@ -15,26 +15,88 @@ struct Config {
     fir: String,
     package_name: String,
     es_path: String,
+    asr_path: String,
+    navdata_path: String,
     prf_prefix: String,
 }
 
-fn read_config(file: &str) -> Config {
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+struct ConfigFile {
+    data: Vec<Config>,
+}
+
+fn read_config(file: &str) -> Vec<Config> {
     let cfg_file = fs::read_to_string(file).expect("Unable to read config file!");
-    let cfg: Config = serde_json::from_str(&cfg_file).expect("Unable to parse config file!");
-    return cfg;
+    let cfg: ConfigFile = serde_json::from_str(&cfg_file).expect("Unable to parse config file!");
+    return cfg.data;
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("ES Sector Update version {}", VERSION);
     // load the values from config file
     let cfg = read_config("config.json");
+    for config in cfg {
+        work_fir(config).await?;
+    }
+    Ok(())
+}
+
+async fn work_fir(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     let fir = cfg.fir.as_str();
+    println!("-- FIR {} --", fir);
     let package_name = cfg.package_name.as_str();
     let es_path = Path::new(cfg.es_path.as_str());
+    
     let prf_prefix = cfg.prf_prefix.as_str();
     // Get latest download link from GNG
+    let file_url = get_sector_link(fir, package_name).await?;
+    // Create a temporary directory to hold the files
+    let tmp_dir = Builder::new().prefix("es-sector-updater-").tempdir()?;
+    // Configure the client to download the sector archive
+    let redirect_policy = redirect::Policy::custom(|attempt| attempt.stop());
+    let hdr = set_headers();
+    let client = reqwest::Client::builder()
+        .redirect(redirect_policy)
+        .default_headers(hdr)
+        .build()?;
+    let response = client.get(file_url).send().await?;
+    let file_name = tmp_dir.path().join("sector.zip");
+    println!("Creating file: {}", file_name.display());
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(file_name.to_owned())?;
+    let mut content = Cursor::new(response.bytes().await?);
+    copy(&mut content, &mut file)?;
+    // File is now downloaded and closed; Time to unzip it
+    let archive = zip::ZipArchive::new(file)?;
+    unzip_archive(archive, &tmp_dir).await?;
+    // Archive is unzipped. No longer needed. Deleting it to make it easier to copy all files.
+    fs::remove_file(file_name)?;
+    let tmp_path = tmp_dir.into_path();
+    copy_files(es_path, tmp_path.clone()).await?;
+    // Set PRF sector files
+    let sector_file_name = get_sector_file_name(&tmp_path).unwrap();
+    change_prf_sectors(es_path, sector_file_name, prf_prefix).await?;
+    // Clear ASRs from sector definitions
+    let asr_partial = es_path.join(cfg.asr_path);
+    let asr_path = Path::new(&asr_partial);
+    clear_asr(asr_path.to_path_buf()).await?;
+    // Copy NavData
+    let navdata_path = tmp_path.join(cfg.navdata_path);
+    copy_navdata(es_path, navdata_path).await?;
+    Ok(())
+}
+
+fn is_correct_link(link: &str, package_name: &str, format: &str) -> bool {
+    return link.contains(package_name) && link.ends_with(format);
+}
+
+async fn get_sector_link(fir: &str, package_name: &str) -> Result<String, Box<dyn std::error::Error>> {
     let url = format!("http://files.aero-nav.com/{}", fir);
-    println!("ES Sector Update version {}", VERSION);
     println!("Getting sector link");
     let website = reqwest::get(url).await?.text().await?;
     let document = scraper::Html::parse_document(&website);
@@ -43,12 +105,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .select(&link_selector)
         .map(|x| x.value().attr("href").unwrap())
         .filter(|x| is_correct_link(x, package_name, "zip"));
-    let file_url = links.last().unwrap();
+    let file_url = links.last().unwrap().to_owned();
     println!("Got url: {}", file_url);
-    // Create a temporary directory to hold the files
-    let tmp_dir = Builder::new().prefix("es-sector-updater-").tempdir()?;
-    // Configure the client to download the sector archive
-    let redirect_policy = redirect::Policy::custom(|attempt| attempt.stop());
+    return Ok(file_url);
+}
+
+fn set_headers() -> HeaderMap {
     let mut hdr = HeaderMap::new();
     hdr.insert(
         header::ACCEPT,
@@ -100,40 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:108.0) Gecko/20100101 Firefox/108.0",
         ),
     );
-    let client = reqwest::Client::builder()
-        .redirect(redirect_policy)
-        .default_headers(hdr)
-        .build()?;
-    let response = client.get(file_url).send().await?;
-    let file_name = tmp_dir.path().join("sector.zip");
-    println!("Creating file: {}", file_name.display());
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(file_name.to_owned())?;
-    let mut content = Cursor::new(response.bytes().await?);
-    copy(&mut content, &mut file)?;
-    // File is now downloaded and closed; Time to unzip it
-    let archive = zip::ZipArchive::new(file)?;
-    unzip_archive(archive, &tmp_dir).await?;
-    // Archive is unzipped. No longer needed. Deleting it to make it easier to copy all files.
-    fs::remove_file(file_name)?;
-    let tmp_path = tmp_dir.into_path();
-    copy_files(es_path, tmp_path.clone()).await?;
-    // Set PRF sector files
-    let sector_file_name = get_sector_file_name(&tmp_path).unwrap();
-    change_prf_sectors(es_path, sector_file_name, prf_prefix).await?;
-    // Clear ASRs from sector definitions
-    let asr_path = es_path.join(format!("{}\\ASR", fir));
-    clear_asr(asr_path).await?;
-    // Copy NavData
-    copy_navdata(es_path, tmp_path, fir).await?;
-    Ok(())
-}
-
-fn is_correct_link(link: &str, package_name: &str, format: &str) -> bool {
-    return link.contains(package_name) && link.ends_with(format);
+    return hdr
 }
 
 async fn unzip_archive(
@@ -243,10 +272,9 @@ async fn clear_asr(asr_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-async fn copy_navdata(es_path: &Path, tmp_path: PathBuf, fir: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn copy_navdata(es_path: &Path, tmp_navdata: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     println! {"Copying NavData to ES dir"};
     let es_navdata = es_path.join("NavData");
-    let tmp_navdata = tmp_path.join(fir).join("NavData");
     // Copy all files to Euroscope directory
     for entry in fs::read_dir(&tmp_navdata)? {
         let entry = entry?;
