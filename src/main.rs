@@ -1,17 +1,12 @@
-use reqwest::header;
-use reqwest::header::HeaderMap;
-use reqwest::redirect;
-use std::fs;
-use std::fs::File;
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::io::copy;
-use std::io::Cursor;
-use std::path::Path;
-use std::path::PathBuf;
-use tempfile::Builder;
 use regex::Regex;
+use reqwest::{header, header::HeaderMap, redirect};
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::fs::{File, OpenOptions};
+use std::io::{copy, Cursor, Write};
+use std::path::{Path, PathBuf};
+use tempfile::{Builder, TempDir};
+use zip::ZipArchive;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -120,7 +115,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut content = Cursor::new(response.bytes().await?);
     copy(&mut content, &mut file)?;
     // File is now downloaded and closed; Time to unzip it
-    let mut archive = zip::ZipArchive::new(file)?;
+    let archive = zip::ZipArchive::new(file)?;
+    unzip_archive(archive, &tmp_dir).await?;
+    // Archive is unzipped. No longer needed. Deleting it to make it easier to copy all files.
+    fs::remove_file(file_name)?;
+    let tmp_path = tmp_dir.into_path();
+    copy_files(es_path, tmp_path.clone()).await?;
+    // Set PRF sector files
+    let sector_file_name = get_sector_file_name(&tmp_path).unwrap();
+    change_prf_sectors(es_path, sector_file_name, prf_prefix).await?;
+    // Clear ASRs from sector definitions
+    println!("Clearing ASRs");
+    let asr_path = es_path.join(format!("{}\\ASR", fir));
+    clear_asr(asr_path).await?;
+    Ok(())
+}
+
+fn is_correct_link(link: &str, package_name: &str, format: &str) -> bool {
+    return link.contains(package_name) && link.ends_with(format);
+}
+
+async fn unzip_archive(
+    mut archive: ZipArchive<File>,
+    tmp_dir: &TempDir,
+) -> Result<(), Box<dyn std::error::Error>> {
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let outpath = match file.enclosed_name() {
@@ -139,11 +157,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    // Archive is unzipped. No longer needed. Deleting it to make it easier to copy all files.
-    drop(archive);
-    fs::remove_file(file_name)?;
-    println!{"Archive closed. Copying files to ES dir"};
-    let tmp_path = tmp_dir.into_path();
+    Ok(())
+}
+
+async fn copy_files(es_path: &Path, tmp_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    println! {"Copying files to ES dir"};
     // Copy all files to Euroscope directory
     for entry in fs::read_dir(&tmp_path)? {
         let entry = entry?;
@@ -162,52 +180,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    // Set PRF sector files
-    let sector_file_name = get_sector_file_name(&tmp_path).unwrap();
-    let prf_regex = Regex::new(r"Settings\tsector.*\n").unwrap();
-    let sector_string = format!("Settings\tsector\t\\{}\n", sector_file_name);
-    for entry in fs::read_dir(es_path)? {
-        let entry = entry?;
-        let fname = entry.file_name().to_str().unwrap().to_owned();
-        if fname.ends_with(".prf") && fname.starts_with(prf_prefix) {
-            let contents = fs::read_to_string(entry.path())?;
-            let new = prf_regex.replace_all(contents.as_str(), sector_string.to_owned());
-            let mut file = OpenOptions::new().write(true).truncate(true).open(entry.path())?;
-            file.write(new.as_bytes())?;
-        }
-
-    }
-    // Clear ASRs from sector definitions
-    println!("Clearing ASRs");
-    let asr_path = es_path.join(format!("{}\\ASR", fir));
-    let asr_regex = Regex::new(r"SECTORFILE:.*\nSECTORTITLE:.\n").unwrap();
-    for entry in fs::read_dir(asr_path)? {
-        let entry = entry?;
-        let fname = entry.file_name().to_str().unwrap().to_owned();
-        if fname.ends_with(".asr") {
-            // It's an ASR file. Delete the sector file binding.
-            let contents = fs::read_to_string(entry.path())?;
-            let new = asr_regex.replace_all(contents.as_str(), "SECTORFILE:\nSECTORTITLE:\n");
-            let mut file = OpenOptions::new().write(true).truncate(true).open(entry.path())?;
-            file.write(new.as_bytes())?;
-        }
-    }
-
     Ok(())
 }
 
-fn get_sector_file_name(path: &PathBuf) -> Option<String>  {
+fn get_sector_file_name(path: &PathBuf) -> Option<String> {
     let mut rv: Option<String> = None;
     fs::read_dir(path).unwrap().for_each(|entry| {
         let entry = entry.unwrap();
         let fname = entry.file_name().to_str().unwrap().to_owned();
         if fname.ends_with(".sct") {
+            println!("Got sector file: {}", fname);
             rv = Some(fname);
         }
     });
     rv
 }
 
-fn is_correct_link(link: &str, package_name: &str, format: &str) -> bool {
-    return link.contains(package_name) && link.ends_with(format);
+async fn change_prf_sectors(
+    es_path: &Path,
+    sector_file_name: String,
+    prf_prefix: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Changing sectorfile in PRFs");
+    let prf_regex = Regex::new(r"Settings\tsector.*\n").unwrap();
+    let sector_string = format!("Settings\tsector\t\\{}\n", sector_file_name);
+    for entry in fs::read_dir(es_path)? {
+        let entry = entry?;
+        let fname = entry.file_name().to_str().unwrap().to_owned();
+        if fname.ends_with(".prf") && fname.starts_with(prf_prefix) {
+            println!("\t{}", fname);
+            let contents = fs::read_to_string(entry.path())?;
+            let new = prf_regex.replace_all(contents.as_str(), sector_string.to_owned());
+            let mut file = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(entry.path())?;
+            file.write(new.as_bytes())?;
+        }
+    }
+    Ok(())
+}
+
+async fn clear_asr(asr_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let asr_regex = Regex::new(r"SECTORFILE:.*\nSECTORTITLE:.\n").unwrap();
+    for entry in fs::read_dir(asr_path)? {
+        let entry = entry?;
+        let fname = entry.file_name().to_str().unwrap().to_owned();
+        if fname.ends_with(".asr") {
+            // It's an ASR file. Delete the sector file binding.
+            println!("\t{}", fname);
+            let contents = fs::read_to_string(entry.path())?;
+            let new = asr_regex.replace_all(contents.as_str(), "SECTORFILE:\nSECTORTITLE:\n");
+            let mut file = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(entry.path())?;
+            file.write(new.as_bytes())?;
+        }
+    }
+    Ok(())
 }
