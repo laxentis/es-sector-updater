@@ -125,9 +125,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sector_file_name = get_sector_file_name(&tmp_path).unwrap();
     change_prf_sectors(es_path, sector_file_name, prf_prefix).await?;
     // Clear ASRs from sector definitions
-    println!("Clearing ASRs");
     let asr_path = es_path.join(format!("{}\\ASR", fir));
     clear_asr(asr_path).await?;
+    // Copy NavData
+    copy_navdata(es_path, tmp_path, fir).await?;
     Ok(())
 }
 
@@ -222,6 +223,7 @@ async fn change_prf_sectors(
 }
 
 async fn clear_asr(asr_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Clearing ASRs");
     let asr_regex = Regex::new(r"SECTORFILE:.*\nSECTORTITLE:.\n").unwrap();
     for entry in fs::read_dir(asr_path)? {
         let entry = entry?;
@@ -236,6 +238,32 @@ async fn clear_asr(asr_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> 
                 .truncate(true)
                 .open(entry.path())?;
             file.write(new.as_bytes())?;
+        }
+    }
+    Ok(())
+}
+
+async fn copy_navdata(es_path: &Path, tmp_path: PathBuf, fir: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println! {"Copying NavData to ES dir"};
+    let es_navdata = es_path.join("NavData");
+    let tmp_navdata = tmp_path.join(fir).join("NavData");
+    // Copy all files to Euroscope directory
+    for entry in fs::read_dir(&tmp_navdata)? {
+        let entry = entry?;
+        let ftyp = entry.file_type()?;
+        let dest = es_navdata.join(entry.file_name());
+        if ftyp.is_dir() {
+            fs::create_dir_all(&dest).unwrap();
+        } else {
+            if let Some(p) = dest.parent() {
+                if !p.exists() {
+                    fs::create_dir_all(p).unwrap();
+                }
+                println!("\t{}", entry.file_name().to_str().unwrap().to_owned());
+                let mut file = File::open(entry.path())?;
+                let mut dest_file = File::create(&dest)?;
+                copy(&mut file, &mut dest_file)?;
+            }
         }
     }
     Ok(())
