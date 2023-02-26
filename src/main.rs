@@ -253,7 +253,7 @@ async fn change_prf_sectors(
 
 async fn clear_asr(asr_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     println!("Clearing ASRs");
-    let asr_regex = Regex::new(r"SECTORFILE:.*\nSECTORTITLE:.\n").unwrap();
+    let asr_regex = Regex::new(r"SECTORFILE:.*\nSECTORTITLE:.*\n").unwrap();
     for entry in fs::read_dir(asr_path)? {
         let entry = entry?;
         let fname = entry.file_name().to_str().unwrap().to_owned();

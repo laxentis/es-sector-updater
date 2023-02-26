@@ -1,18 +1,26 @@
 [
     {
-        "fir": "EPWW",
-        "package_name": "Sector_AIRAC_Update",
-        "es_path": "C:\\Users\\dawid\\Documents\\EuroScope",
-        "asr_path": "EPWW\\ASR",
-        "navdata_path": "EPWW\\NavData",
-        "prf_prefix": "Poland "
-    },
-    {
         "fir": "EURO",
         "package_name": "EUROE/Update-Package",
         "es_path": "C:\\Users\\dawid\\Documents\\EuroScope",
         "asr_path": "EUROE\\ASR",
         "navdata_path": "EUROE\\NavData",
         "prf_prefix": "EURE"
+    },
+    {
+        "fir": "EXCXO",
+        "package_name": "EXCXO-Install",
+        "es_path": "C:\\Users\\dawid\\Documents\\EuroScope",
+        "asr_path": "EXCXO\\ASR",
+        "navdata_path": "EXCXO\\NavData",
+        "prf_prefix": "EXCXO"
+    },
+    {
+        "fir": "EPWW",
+        "package_name": "Sector_AIRAC_Update",
+        "es_path": "C:\\Users\\dawid\\Documents\\EuroScope",
+        "asr_path": "EPWW\\ASR",
+        "navdata_path": "EPWW\\NavData",
+        "prf_prefix": "Poland "
     }
 ]
